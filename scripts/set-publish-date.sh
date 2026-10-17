@@ -22,6 +22,10 @@ plus_days() {
 
 if [[ -n "${2:-}" ]]; then
   PUBLISH_DATE="$2"
+  [[ "$PUBLISH_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}$ ]] || { echo "Error: 日時は YYYY-MM-DD HH:MM: $PUBLISH_DATE" >&2; exit 1; }
+  # 実在する日時か（2030-02-30 などを弾く）。BSD date は繰り上げて受け付けるので、書き戻して一致を見る
+  normalized="$(date -j -f "%Y-%m-%d %H:%M" "$PUBLISH_DATE" "+%Y-%m-%d %H:%M" 2>/dev/null || date -d "$PUBLISH_DATE" "+%Y-%m-%d %H:%M" 2>/dev/null || true)"
+  [[ "$normalized" == "$PUBLISH_DATE" ]] || { echo "Error: 存在しない日時: $PUBLISH_DATE" >&2; exit 1; }
 else
   case "$(plus_days 1 %u)" in  # 明日の曜日 1=Mon ... 7=Sun
     6) PUBLISH_DATE="$(plus_days 3 %Y-%m-%d) 08:00" ;;  # 明日が土曜 → 月曜

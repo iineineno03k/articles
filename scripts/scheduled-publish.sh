@@ -48,6 +48,7 @@ echo ""
 echo "--- Step 2: scan articles ---"
 
 TARGETS=()
+INVALID=()  # 日時が読めない予約。処理は続け、最後に失敗で終えて監視に拾わせる
 
 for f in "$ARTICLES_DIR"/*.md; do
   [[ ! -f "$f" ]] && continue
@@ -71,7 +72,8 @@ for f in "$ARTICLES_DIR"/*.md; do
     SCHEDULED_EPOCH=$(date -d "$PUBLISHED_AT" +%s 2>/dev/null) || SCHEDULED_EPOCH=""
   fi
   if [[ -z "$SCHEDULED_EPOCH" ]]; then
-    echo "⚠ Invalid published_at format in $(basename "$f"): $PUBLISHED_AT"
+    echo "✗ Invalid published_at format in $(basename "$f"): $PUBLISHED_AT"
+    INVALID+=("$(basename "$f")")
     continue
   fi
 
@@ -101,6 +103,7 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   echo ""
   echo "No articles ready to publish."
   echo "===== scheduled-publish.sh complete: $(date) ====="
+  [[ ${#INVALID[@]} -eq 0 ]] || { echo "✗ published_at を読めない記事がある: ${INVALID[*]}" >&2; exit 1; }
   exit 0
 fi
 
@@ -149,3 +152,4 @@ git push origin main 2>&1
 echo ""
 echo "===== scheduled-publish.sh complete: $(date) ====="
 echo "Published ${#TARGETS[@]} article(s): ${TARGETS[*]}"
+[[ ${#INVALID[@]} -eq 0 ]] || { echo "✗ published_at を読めない記事がある: ${INVALID[*]}" >&2; exit 1; }
