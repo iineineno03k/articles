@@ -1,0 +1,216 @@
+---
+title: "ZennとQiitaに同時投稿する仕組みをGitHub連携で作った（プライベートリポジトリ対応）"
+emoji: "📝"
+type: "tech"
+topics: ["Zenn", "Qiita", "GitHubActions", "自動化"]
+published: true
+---
+
+## 課題: 2プラットフォームに手動で出すのは面倒
+
+技術記事を書いたらZennとQiitaの両方に出したい。読者層が違うし、露出は多い方がいい。
+
+でも手動で2つのプラットフォームにコピペするのは地味に面倒だ。フロントマターの形式が微妙に違うし、修正があったら両方直さないといけない。しかも「あとでQiitaにも出そう」と思ってそのまま忘れる、というのが目に見えている。
+
+欲しいのは「1つのMarkdownを書いたら、両方に自動で出る」仕組みだ。
+
+## 前提: ZennとQiitaそれぞれの公開の仕組み
+
+まず、各プラットフォームが単体でどう動くかを整理する。
+
+### Zenn: GitHub連携で `articles/` を監視
+
+Zenn CLIを使うと、GitHubリポジトリとZennを連携できる。
+
+```bash
+npm install zenn-cli
+npx zenn init    # articles/, books/ が生成される
+```
+
+[zenn.dev/dashboard/deploys](https://zenn.dev/dashboard/deploys) でリポジトリを連携すると、mainにpushされるたびに `articles/` 内のMarkdownをZennが読み取って反映する。記事のフロントマターはこんな形式だ。
+
+```yaml
+---
+title: "記事タイトル"
+emoji: "📝"
+type: "tech"
+topics: ["Zenn", "Qiita"]
+published: true
+---
+```
+
+### Qiita: GitHub Actionsで `public/` を投稿
+
+Qiita CLIを使うと、GitHub Actions経由で記事を自動投稿できる。
+
+```bash
+npm install @qiita/qiita-cli
+npx qiita init   # public/, .github/workflows/publish.yml が生成される
+```
+
+こちらは `public/` ディレクトリに記事を置く。mainにpushされると、Qiita公式のGitHub Actionが `public/` 内のMarkdownをQiita APIで投稿する。フロントマターはこう。
+
+```yaml
+---
+title: '記事タイトル'
+tags:
+  - 'Zenn'
+  - 'Qiita'
+ignorePublish: false
+---
+```
+
+GitHubリポジトリの Settings → Secrets → Actions に `QIITA_TOKEN`（[アクセストークン発行ページ](https://qiita.com/settings/tokens/new)で `read_qiita` + `write_qiita` スコープ）を登録しておく必要がある。
+
+### つまりディレクトリが違う
+
+| | 記事の置き場所 | 公開の仕組み |
+|---|---|---|
+| **Zenn** | `articles/` | GitHub連携（Zenn側が監視） |
+| **Qiita** | `public/` | GitHub Actions（pushトリガー） |
+
+Zennは `articles/`、Qiitaは `public/`。フロントマターの形式も違う。ここを橋渡しするのが同時投稿の肝になる。
+
+## 2つを接続する: フロントマター変換スクリプト
+
+やることはシンプルだ。**`articles/` に書いた記事を、Qiita用のフォーマットに変換して `public/` にコピーする**。
+
+```
+articles/<slug>.md（Zenn形式で執筆。これが原本）
+    │
+    ├─→ Zenn: GitHub連携で自動公開
+    │
+    └─→ sync-to-qiita.sh（フロントマター変換）
+         └─→ public/<slug>.md（Qiita形式）
+              └─→ GitHub Actions で自動公開
+```
+
+フロントマターの変換ポイント:
+
+| 項目 | Zenn | Qiita |
+|------|------|-------|
+| タグ | `topics: [tag1, tag2]` | `tags:` + YAML配列 |
+| 公開制御 | `published: true/false` | `ignorePublish: true/false`（**反転**） |
+| 絵文字 | `emoji: "📝"` | なし |
+| 種別 | `type: "tech"` | なし |
+
+変換スクリプトの核心部分:
+
+```bash
+# フロントマターを抽出（1つ目と2つ目の---の間）
+FRONTMATTER=$(awk '/^---$/{c++; next} c==1{print}' "$ZENN_FILE")
+BODY=$(awk 'BEGIN{c=0} /^---$/{c++; if(c==2){found=1; next}} found{print}' "$ZENN_FILE")
+
+# published → ignorePublish（反転）
+if [[ "$PUBLISHED" == "true" ]]; then
+  IGNORE_PUBLISH="false"
+else
+  IGNORE_PUBLISH="true"
+fi
+```
+
+これで `sync-to-qiita.sh <slug>` 一発でQiita形式に変換される。あとはgit pushすれば両方に公開される。
+
+**パブリックリポジトリならここまでで完成。** GitHub Actionsの無料枠もパブリックなら無制限なので、何も気にすることはない。
+
+## プライベートリポジトリの場合
+
+自分の場合、リポジトリをプライベートにしている。理由は単純で、**下書き段階の記事が公開されるのが嫌**だからだ。`published: false` の記事もGitHubに上がっている以上、パブリックリポジトリなら誰でも読める。
+
+他にも、プライベートにしたいケースはある:
+- 社内事例を含む記事の下書きがある
+- ブログとコードが同じリポジトリで、コードは公開したくない
+- 単純に作業途中を見せたくない
+
+プライベートリポジトリでも上記の仕組みはそのまま動く。pushトリガーでの即時公開なら何の問題もない。月数回の投稿で、1回あたり1〜2分。GitHub Actionsの無料枠（月2,000分）に対して誤差だ。
+
+問題は**予約投稿**をやりたくなったときに出てくる。
+
+## 予約投稿がほしい
+
+記事を書き終わるのが深夜になることがある。でも深夜に投稿しても読まれない。Qiitaのデータ分析によると、**平日朝7〜8時**が最もいいね獲得率が高い。通勤時間帯の閲覧が多く、トレンド更新（9:00）前に初動を稼げるからだ。
+
+つまり「深夜に書き終わる → 翌朝8時に公開」ができると嬉しい。
+
+### Zennの予約投稿: 公式機能がある
+
+Zennは簡単だ。フロントマターに `published_at` を書くだけ。
+
+```yaml
+---
+title: "記事タイトル"
+published: true
+published_at: 2026-03-26 08:00
+---
+```
+
+指定時刻になると自動で公開される。
+
+### Qiitaの予約投稿: 公式機能がない
+
+Qiitaには予約投稿機能がない。GitHub Actionsのcronスケジュールで「毎時チェック → 時刻が来た記事を公開」という仕組みを作ることはできる。
+
+パブリックリポジトリなら、これで問題ない。GitHub Actionsは無制限だ。
+
+でもプライベートリポジトリだと無料枠の問題が出る。毎時実行だと月720回。1回2分として**月1,440分**。2,000分の枠の72%を予約投稿ごときに使うのは馬鹿らしい。他のCI（テストやデプロイ）に使いたくなったら詰む。
+
+### 解決策: launchdでCI枠ゼロ
+
+自分の環境では、既にmacOSのlaunchdでデイリーフィード（[毎朝の技術ニュース自動要約](https://zenn.dev/inajiro/articles/20260325-claude-code-daily-feed)）を定期実行している。同じパターンを使えばいい。
+
+```xml
+<!-- 平日（月〜金）朝8:00に実行 -->
+<key>StartCalendarInterval</key>
+<array>
+  <dict>
+    <key>Weekday</key><integer>1</integer>
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <!-- 火〜金も同様 -->
+</array>
+```
+
+スクリプト（`scheduled-publish.sh`）がやることはシンプルだ。
+
+1. `articles/` 内の全記事を走査
+2. `published: true` かつ `published_at` が現在時刻以前の記事を検出
+3. 該当記事があれば `sync-to-qiita.sh` で変換 → `ignorePublish: false` に書き換え → git push
+4. 該当記事がなければ何もしない
+
+```bash
+for f in "$ARTICLES_DIR"/*.md; do
+  PUBLISHED=$(awk '/^---$/{c++; next} c==1{print}' "$f" | grep '^published:' | sed 's/^published: *//' || true)
+  PUBLISHED_AT=$(awk '/^---$/{c++; next} c==1{print}' "$f" | grep '^published_at:' | sed 's/^published_at: *//' | sed 's/^"//;s/"$//' || true)
+
+  [[ "$PUBLISHED" != "true" ]] && continue
+  [[ -z "$PUBLISHED_AT" ]] && continue
+
+  SCHEDULED_EPOCH=$(date -j -f "%Y-%m-%d %H:%M" "$PUBLISHED_AT" +%s 2>/dev/null)
+  if [[ "$SCHEDULED_EPOCH" -le "$NOW" ]]; then
+    SLUG=$(basename "$f" .md)
+    TARGETS+=("$SLUG")
+  fi
+done
+```
+
+CI枠の消費はゼロ。launchdはmacOSのネイティブ機能だから追加コストもない。pushトリガーでQiitaのGitHub Actionsが走る分だけ消費するが、それは月数回の投稿分だから微々たるものだ。
+
+## まとめ
+
+| パターン | Zenn | Qiita | 予約投稿 |
+|---------|------|-------|---------|
+| パブリックリポジトリ | GitHub連携 | GitHub Actions | Zenn: `published_at`、Qiita: cron可（無制限） |
+| プライベートリポジトリ | GitHub連携 | GitHub Actions | Zenn: `published_at`、Qiita: **launchd推奨**（CI枠節約） |
+
+パブリックリポジトリなら全部GitHub上で完結する。プライベートリポジトリでも基本は同じだが、予約投稿にcronを使うとCI無料枠を食う。ローカルのlaunchdでpushタイミングを制御すれば、CI枠の消費はゼロにできる。
+
+1ソースで2プラットフォーム、予約投稿も含めて全自動。これで記事を書くこと自体に集中できる。
+
+## 参考文献
+
+- [Zenn CLIで記事・本を管理する方法](https://zenn.dev/zenn/articles/zenn-cli-guide) — Zenn CLI公式ガイド
+- [GitHubリポジトリでZennのコンテンツを管理する](https://zenn.dev/zenn/articles/connect-to-github) — Zenn GitHub連携の設定方法
+- [Qiita CLI](https://github.com/increments/qiita-cli) — Qiita CLI公式リポジトリ
+- [About billing for GitHub Actions](https://docs.github.com/en/billing/managing-billing-for-github-actions/about-billing-for-github-actions) — GitHub Actions無料枠の詳細
+- [記事の公開予約ができるようになりました](https://info.zenn.dev/schedule-post-articles) — Zennの予約投稿機能

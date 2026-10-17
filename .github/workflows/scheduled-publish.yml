@@ -1,0 +1,51 @@
+# 予約投稿の定時公開。published_at を過ぎた記事をQiita形式へ変換してmainへpushし、Qiita公開を起動する。
+# Zennは published_at で自分で公開する。GitHubのscheduleは遅れたり起動されないことがあるため、
+# 主な起動元は Claude Code のルーチン『x-inajiro: 予約公開を起動』（8:03 JST、repository_dispatch: publish-tick）。
+# scheduleは保険。二重に起動しても投稿済み判定で再投稿しない。
+name: Scheduled publish
+
+on:
+  schedule:
+    - cron: '3 23 * * *' # 毎日 8:03 JST（保険）
+  repository_dispatch:
+    types: [publish-tick]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: scheduled-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 依存
+        run: npm ci --silent
+      - name: 予約公開
+        id: run
+        env:
+          QIITA_TOKEN: ${{ secrets.QIITA_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          before=$(git rev-parse HEAD)
+          bash scripts/scheduled-publish.sh
+          [ "$(git rev-parse HEAD)" = "$before" ] && echo "pushed=false" >> "$GITHUB_OUTPUT" || echo "pushed=true" >> "$GITHUB_OUTPUT"
+      # GITHUB_TOKENでのpushは他のワークフローを起動しないため、公開を明示的に呼ぶ。
+      - name: Qiita公開ワークフローを起動
+        if: steps.run.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish.yml --ref main

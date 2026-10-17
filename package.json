@@ -1,0 +1,13 @@
+{
+  "name": "articles",
+  "private": true,
+  "description": "iineineno03k の Zenn / Qiita 記事",
+  "scripts": {
+    "preview": "zenn preview",
+    "test": "python3 -m unittest discover -s tests"
+  },
+  "devDependencies": {
+    "@qiita/qiita-cli": "1.8.0",
+    "zenn-cli": "0.4.7"
+  }
+}

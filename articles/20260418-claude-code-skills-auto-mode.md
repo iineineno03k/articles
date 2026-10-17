@@ -1,0 +1,176 @@
+---
+title: "--dangerously-skip-permissionsは最強じゃなかった。スキル開発はauto mode一択"
+emoji: "🔐"
+type: "tech"
+topics: ["ClaudeCode", "AI", "設定", "Anthropic"]
+published: true
+---
+
+## スキル開発してると許可ダイアログが止まらない
+
+Claude Codeでスキルを作り込み始めて、最初にぶつかった壁がこれだ。スキルを新規で作ろうとするたび、編集するたび、削除するたびに、毎セッション何度も何度も許可ダイアログが出てくる。
+
+スキル用のディレクトリを作るだけでこれ。
+
+![スキルディレクトリ作成時の許可ダイアログ](/images/20260418/permission-mkdir-skill.png)
+
+SKILL.mdを書き出すたびにこれ。選択肢2に `Yes, and allow Claude to edit its own settings for this session` と書いてある通り、許可しても「このセッションの間だけ」という扱いで、次回またゼロから聞かれる。
+
+![スキル本体書き込み時の許可ダイアログ](/images/20260418/permission-write-skill.png)
+
+スキルが不要になって削除しようとしても同じ。
+
+![スキル削除時の許可ダイアログ](/images/20260418/permission-rm-skill.png)
+
+「Yes」を連打する作業でまともに開発が進まない。しかも次のセッションを起こすとまたゼロからやり直し。スキルを育てることが、許可ボタンを押すゲームになっていた。
+
+この問題を丸3時間かけて調査して、最終的に解決したのが `--permission-mode auto` での起動だった。この記事はその調査記録と結論だ。
+
+## 試してダメだったもの一覧
+
+先に結論を言うと、`.claude/skills/` 配下のファイル操作はClaude Codeの "protected paths" として扱われていて、書き込み系操作に関してはセキュリティ保護が最優先される仕様になっている。そのため、世の中で「許可プロンプトを全部消す」と言われている手段のうち、`.claude/skills/` に対してはほとんどが効かない。
+
+具体的に試してダメだった手段を列挙する。
+
+### 1. `defaultMode: "bypassPermissions"` を settings.json に設定
+
+`.claude/settings.json` に以下を入れれば、普通のファイル編集では許可プロンプトは出なくなる。
+
+```json
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}
+```
+
+ところが `.claude/skills/` 配下のファイル編集・削除には効かない。許可ダイアログはそのまま出る。
+
+### 2. `Write(.claude/**)` / `Edit(.claude/**)` を allow に追加
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Write(.claude/**)",
+      "Edit(.claude/**)"
+    ]
+  }
+}
+```
+
+これも効かない。明示的にパスを許可しても `.claude/skills/` 配下の書き込みプロンプトは出続ける。
+
+### 3. `--dangerously-skip-permissions` フラグで起動
+
+世間ではこれが最強扱いされているモード。別名「YOLOモード」として知られている。
+
+```bash
+claude --dangerously-skip-permissions
+# または新フラグ
+claude --permission-mode bypassPermissions
+```
+
+これでも `.claude/skills/` 配下の書き込みプロンプトは消えない。最強だと思っていたモードが効かない現実に、最初は自分の設定が何か間違っているのかと疑った。
+
+### 4. PermissionRequest hook で自動allow
+
+settings.json に PermissionRequest フックを設定して、`.claude/skills/` 配下のアクセスを自動で allow する JSON を返す方式。
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [{
+      "matcher": "Write|Edit|Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "jq -e '(.tool_input.file_path // .tool_input.command // \"\") | test(\"\\\\.claude/skills/\")' >/dev/null 2>&1 && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"permissionDecision\":\"allow\"}}' || true"
+      }]
+    }]
+  }
+}
+```
+
+pipe-testでcommand単体では allow を返す挙動まで確認したが、実際のツール呼び出し時は hook より前のレイヤーで保護がかかっていて、プロンプトは出続ける。
+
+## 公式ドキュメントで裏が取れる
+
+一通り試して全滅した時点で公式ドキュメントに戻ると、 [Choose a permission mode](https://code.claude.com/docs/en/permission-modes) に以下の記述がある。
+
+> Regardless of mode, writes to protected paths are never auto-approved, guarding repository state and Claude's own configuration against accidental corruption.
+
+訳すと「モードに関係なく、protected paths への書き込みは自動承認されない」。この protected paths の中に `.claude` ディレクトリが含まれている。
+
+ドキュメント上、`.claude/commands/`, `.claude/agents/`, `.claude/skills/`, `.claude/worktrees/` は例外（保護対象外）として扱われるはずと書かれている。しかし実測では `.claude/skills/` でも保護が効いていて、プロンプトが出る。
+
+これはGitHub issueでも複数報告されている。
+
+- [Issue #36497](https://github.com/anthropics/claude-code/issues/36497): `.claude/skills/` edits prompt for permission despite being documented as exempt (regression in 2.1.79)
+- [Issue #37157](https://github.com/anthropics/claude-code/issues/37157): bypassPermissions v2.1.81: .claude/skills/ not exempt from protected directory prompt despite documentation
+- [Issue #38806](https://github.com/anthropics/claude-code/issues/38806): Allow bypassPermissions mode to fully bypass .claude/ directory protections
+
+v2.1.79以降の regression で、スキル例外化が効かなくなっている可能性が高い。少なくとも、ドキュメントの記述と実装の挙動が一致していない状態が続いている。
+
+## 解決策: auto mode で起動する
+
+色々試した末にたどり着いた唯一の解決策が `--permission-mode auto` での起動だった。
+
+```bash
+claude --permission-mode auto
+```
+
+このモードで起動した状態でスキルディレクトリに対して書き込みを実行すると、許可プロンプトなしで通る。
+
+自分は普段 `yolo` という alias で Claude Code を起動していた。
+
+```bash
+# 以前
+alias yolo="claude --dangerously-skip-permissions"
+
+# 変更後
+alias yolo="claude --permission-mode auto"
+```
+
+これに切り替えた瞬間、スキル開発のストレスがほぼ消えた。
+
+## auto modeの制約
+
+万能ではない。以下の制約がある。
+
+| 項目 | 内容 |
+|------|------|
+| プラン | Max / Team / Enterprise / API いずれか必須 |
+| モデル | Opus 4.6以降 が必須 |
+| 応答速度 | 分類器が挟まるため、体感でわずかに遅くなるシーンがある |
+
+ProプランやHaikuでは使えない。ここが最大の制約で、「許可プロンプトを消したいだけなのにプラン縛りかよ」という不満は残る。ただ、スキルを本気で作り込むならMaxは現実的な選択肢ではあると思う。
+
+## bypassとautoは別物の設計
+
+ここで面白いのが、bypassとautoは「両方とも許可を通すモード」に見えて、設計思想が全く違うという点だ。
+
+- bypassPermissions: ユーザーが書いたpermission rules（allow/deny/ask）の評価層を短絡させる設計。ただし protected paths の保護は別レイヤーで動いているので残る
+- auto mode: Anthropicの安全性分類器が動的に判断する設計。protected pathsの保護も分類器判定の対象として扱える
+
+直感的には「全部スキップするbypassの方が強い」と思える。でもprotected pathsに関しては、分類器判定で動的に通せる auto の方が通用する。この非対称性が、自分が最初にbypassを信じきっていたせいで解決まで3時間かかった原因だった。
+
+公式の [Auto Mode for Claude Code](https://www.anthropic.com/engineering/claude-code-auto-mode) 記事にも、auto modeが transcript classifier と prompt-injection probe の2層防御で判定する仕組みが解説されている。この分類器層を持っているかどうかが、protected paths を扱えるかの分水嶺になっている。
+
+## まとめ
+
+- `.claude/skills/` 配下の書き込みは、`bypassPermissions` でも `--dangerously-skip-permissions` でも `allow rule` でも `PermissionRequest hook` でも通らない
+- これは v2.1.79以降のregressionの可能性が高く、公式ドキュメントと実装にズレがある
+- 現時点で唯一通る方法は `claude --permission-mode auto` での起動
+- ただしMax以上のプランが必須
+- プラン契約できない場合、GitHub Issue [#38806](https://github.com/anthropics/claude-code/issues/38806) に +1して優先度を上げさせる動きが現実解
+
+スキルを本気で育てる気があるなら、auto modeでの起動に切り替えよう。自分は切り替えた瞬間、許可ダイアログとの戦いから解放された。
+
+## 参考文献
+
+- [Choose a permission mode - Claude Code Docs](https://code.claude.com/docs/en/permission-modes)
+- [Auto Mode for Claude Code - Anthropic Engineering Blog](https://www.anthropic.com/engineering/claude-code-auto-mode)
+- [GitHub Issue #36497: .claude/skills/ edits prompt for permission despite being documented as exempt](https://github.com/anthropics/claude-code/issues/36497)
+- [GitHub Issue #37157: bypassPermissions v2.1.81: .claude/skills/ not exempt from protected directory prompt](https://github.com/anthropics/claude-code/issues/37157)
+- [GitHub Issue #38806: Allow bypassPermissions mode to fully bypass .claude/ directory protections](https://github.com/anthropics/claude-code/issues/38806)
+- [Claude Code Changelog](https://code.claude.com/docs/en/changelog)

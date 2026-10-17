@@ -1,0 +1,29 @@
+# public/ の変更をQiitaへ公開する（Qiita CLI公式のAction）。
+name: Publish articles
+
+on:
+  push:
+    branches: [main]
+    paths: ['public/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish_articles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # 第三者Actionはコミットへ固定する（v1 = fd520c1、2026-10-12確認）。
+      - uses: increments/qiita-cli/actions/publish@fd520c132ab8149fe5c8f5c947469e4f89281845
+        with:
+          qiita-token: ${{ secrets.QIITA_TOKEN }}
+          root: "."

@@ -1,0 +1,268 @@
+---
+title: "Claude Codeで毎朝の技術ニュースを自動要約する仕組みを作った"
+emoji: "📰"
+type: "tech"
+topics: ["ClaudeCode", "自動化", "ShellScript", "情報収集"]
+published: true
+---
+
+## 課題: 情報収集は続かない
+
+エンジニアとして技術トレンドのキャッチアップは大事だ。GitHub TrendingやHacker Newsを毎朝巡回して、気になるリポジトリや記事をチェックして……と頭では分かっている。
+
+でも現実には続かない。
+
+RSSリーダーを入れても「未読1000件」になって見なくなる。Xのタイムラインを眺めても流れていく。結局「あとで読む」リストが積み上がって、永遠に消化されない。
+
+欲しいのは「一次ソースを全部読む時間」ではなく、**「人に説明できるレベルの要約」**だ。「昨日のGitHub Trendingで何が上がってた？」と聞かれたときに、30秒で答えられる程度の情報。
+
+そこでClaude Codeを使って「デイリーフィード」を作った。
+
+## 作ったもの
+
+5つのソースから技術ニュースを自動取得し、Claude Codeが要約付きのMarkdownを生成する仕組みだ。
+
+**取得ソース:**
+- GitHub Trending（日次）
+- Hacker News（過去24時間のトップ記事）
+- Reddit（r/programming, r/MachineLearning）
+- Zenn（デイリートレンド）
+- Qiita（直近のストック数上位）
+
+**出力例:**
+
+```markdown
+# 2026-03-24 Daily Feed
+
+## GitHub Trending
+
+### TradingAgents — 複数LLMエージェントが協調する金融取引フレームワーク
+
+複数のAIエージェントがアナリスト・トレーダー・リスク管理者といった役割を
+分担し、株式・暗号資産の取引判断を行うフレームワーク。単一LLMではなく
+マルチエージェント設計により、各エージェントが専門的な視点で市場分析・
+リスク評価を行う。
+
+🔗 https://github.com/TauricResearch/TradingAgents
+
+## Hacker News
+
+### iPhone 17 ProでローカルLLM 400Bパラメータ動作を実証（527pt, 249コメント）
+
+スマートフォン単体で400Bパラメータのラージ言語モデルを実行するデモを
+公開。クラウドAPIなしでの高精度LLM推論がモバイルで実現できることで、
+プライバシー・レイテンシ・オフライン活用の観点から注目を集めている。
+
+🔗 https://twitter.com/anemll/status/...
+```
+
+これを読めば、5つのサイトを巡回しなくても「昨日何があったか」を人に説明できる。
+
+## 設計: シェルスクリプト + Claude Code
+
+処理を2つのフェーズに分けた。
+
+```
+Phase 1: 生データ取得（シェルスクリプト、AIなし）
+    curl/jqで5ソースからデータを取得
+    ↓
+Phase 2: AI要約（Claude Code）
+    生データを読み込み、要約付きfeed.mdを生成
+```
+
+なぜ分けたか。データ取得はcurl/jqで十分できる。AIにHTTPリクエストを投げさせる意味がない。**AIに任せる部分を最小限にする**ことで、デバッグしやすく、安定した仕組みになる。
+
+## 各ソースの取得方法
+
+5つのスクリプト（各40〜57行）で、すべて認証不要・無料のAPIを使っている。
+
+### GitHub Trending: RSSフィード
+
+GitHub Trendingには公式APIがない。代わりにコミュニティが提供しているRSSフィード（mshibanami/GitHubTrendingRSS）を使う。
+
+```bash
+# RSSのXMLをcurlで取得し、awk/sedでパース
+XML=$(curl -s "https://mshibanami.github.io/GitHubTrendingRSS/daily/all.xml")
+
+# <item>タグからタイトル・リンク・概要を抽出
+echo "$XML" | awk '
+  /<item>/ { in_item=1; title=""; link=""; desc="" }
+  /<\/item>/ {
+    if (in_item && title != "") {
+      print title "|" link "|" desc
+    }
+    in_item=0
+  }
+  # ... 各フィールドの抽出
+' | head -10
+```
+
+XMLパーサーを使わずawk/sedで処理している。`xmllint`がない環境でも動くようにするためだ。HTMLエスケープ（`&amp;` → `&` 等）のデコードも自前で行う。
+
+### Hacker News: Algolia Search API
+
+Hacker NewsにはAlgoliaが提供する検索APIがある。日付範囲とスコア順でのフィルタが可能。
+
+```bash
+# 過去24時間のstoryをスコア順で取得
+RESPONSE=$(curl -s "https://hn.algolia.com/api/v1/search?\
+tags=story&\
+numericFilters=created_at_i%3E${SINCE_TS},created_at_i%3C${UNTIL_TS}&\
+hitsPerPage=30")
+
+# jqでスコア順にソートし、base64エンコードで安全に1件ずつ処理
+echo "$RESPONSE" | jq -r \
+  '[.hits | sort_by(-.points)][0][] | @base64'
+```
+
+**ポイント: `@base64` パイプ**。JSONの各要素をbase64エンコードしてからwhileループで1件ずつデコードする。JSONに改行やパイプ文字が含まれていても安全に処理できるパターンだ。
+
+### Reddit: 公開JSON API
+
+RedditのJSON APIはUser-Agentヘッダが必須。レート制限対策で2秒のsleepを入れている。
+
+```bash
+UA="MyFeedBot/1.0"
+SUBREDDITS=("programming" "MachineLearning")
+
+for SUB in "${SUBREDDITS[@]}"; do
+  RESPONSE=$(curl -s -H "User-Agent: ${UA}" \
+    "https://www.reddit.com/r/${SUB}/top.json?t=day&limit=5")
+
+  # レスポンス検証（APIが落ちていることがある）
+  if ! echo "$RESPONSE" | jq -e '.data.children' > /dev/null 2>&1; then
+    echo "(取得失敗)" >> "$OUTPUT_FILE"
+    sleep 2
+    continue
+  fi
+  # ...
+  sleep 2  # レート制限対策
+done
+```
+
+Reddit APIは不安定なことがある（実際に取得失敗した日もあった）。`jq -e`でレスポンスを検証し、失敗時は「(取得失敗)」と記録して続行する設計にしている。
+
+### Zenn: 公式API
+
+ZennのAPIは`/api/articles?order=daily`でデイリートレンドを取得できる。
+
+```bash
+RESPONSE=$(curl -s 'https://zenn.dev/api/articles?order=daily&count=30')
+
+# タイムゾーン変換がハマりどころ
+# published_at: "2026-03-20T08:07:00.679+09:00"
+# jqのfromdateiso8601は+09:00形式を扱えない
+# → 先頭19文字を切り出してUTC扱いで比較
+SINCE_ISO=$(date -r "$SINCE_TS" +%Y-%m-%dT%H:%M:%S)
+FILTERED=$(echo "$RESPONSE" | jq -r \
+  --arg since "$SINCE_ISO" \
+  '[.articles[] |
+    select((.published_at | split(".")[0]) >= $since)
+  ] | .[0:10][] | @base64')
+```
+
+地味なハマりどころは**タイムゾーン変換**。Zennの`published_at`は`+09:00`付きのISO 8601形式だが、jqの`fromdateiso8601`はこのフォーマットを扱えない。小数点以前の19文字（`yyyy-mm-ddTHH:MM:SS`）を切り出してローカル時刻同士で比較する方法で回避した。
+
+### Qiita: 公式API v2
+
+QiitaのAPIは`/api/v2/items`でクエリ検索ができる。`stocks:>3`でストック数3以上にフィルタしている。
+
+```bash
+# 日付精度（yyyy-mm-dd）のみ対応。時刻精度だと500エラー
+SINCE_DATE=$(date -r "$SINCE_TS" +%Y-%m-%d)
+UNTIL_DATE=$(date -r "$UNTIL_TS" +%Y-%m-%d)
+
+RESPONSE=$(curl -s \
+  "https://qiita.com/api/v2/items?per_page=10&\
+query=stocks%3A%3E3+created%3A%3E%3D${SINCE_DATE}+created%3A%3C%3D${UNTIL_DATE}")
+```
+
+Qiita APIの注意点として、検索クエリの日付は`yyyy-mm-dd`の精度しか受け付けない。時刻（`yyyy-mm-ddTHH:MM:SS`）を渡すと500エラーが返る。
+
+## 一括取得スクリプト
+
+5つのスクリプトを順番に呼ぶ`run-all.sh`がエントリポイントだ。
+
+```bash
+#!/bin/bash
+# 全ソースからフィードを取得
+# Usage: bash run-all.sh <output_dir> <since_ts> <until_ts>
+
+SCRIPTS=(
+  "fetch-github-trending.sh"
+  "fetch-hackernews.sh"
+  "fetch-reddit.sh"
+  "fetch-zenn.sh"
+  "fetch-qiita.sh"
+)
+
+FAILED=0
+for SCRIPT in "${SCRIPTS[@]}"; do
+  echo "→ ${SCRIPT}..."
+  if bash "${SCRIPT_DIR}/${SCRIPT}" "$OUTPUT_DIR" "$SINCE_TS" "$UNTIL_TS"; then
+    echo ""
+  else
+    echo "  ✗ FAILED: ${SCRIPT}" >&2
+    FAILED=$((FAILED + 1))
+  fi
+done
+
+echo "=== Done: $((${#SCRIPTS[@]} - FAILED))/${#SCRIPTS[@]} succeeded ==="
+```
+
+全スクリプトの合計は約250行。UNIXタイムスタンプを共通のインターフェースとして受け取り、各APIのフォーマットに変換する設計にしている。1つ失敗しても他は続行する。
+
+## AI要約: 生データ → feed.md
+
+Phase 1で取得した生データはこんな感じだ。
+
+```markdown
+## 1. TauricResearch/TradingAgents
+- URL: https://github.com/TauricResearch/TradingAgents
+- 概要: TradingAgents: Multi-Agents LLM Financial Trading Framework <img src="https://raw.github...
+```
+
+URLと概要200字、HTMLタグのゴミ付き。これだけでは「人に説明できるレベル」には程遠い。
+
+Claude Codeに以下のルールで要約させる。
+
+1. **各記事のタイトルは内容がわかる日本語見出し**（原題そのままではなく意訳）
+2. **要約は記事の内容を十分に説明する**（読めばその話題について人に説明できるレベル）
+3. **一次ソースURLは末尾に配置**（「もっと知りたい」時のオプション）
+4. **客観的に書く**（ファスト教養として中立）
+
+結果、同じリポジトリがこう変わる。
+
+```markdown
+### TradingAgents — 複数LLMエージェントが協調する金融取引フレームワーク
+
+複数のAIエージェントがアナリスト・トレーダー・リスク管理者といった
+役割を分担し、株式・暗号資産の取引判断を行うフレームワーク。
+単一LLMではなくマルチエージェント設計により、各エージェントが専門的な
+視点で市場分析・リスク評価を行う。実運用ではなくリサーチ・バックテスト
+向けだが、LLMをファイナンスに組み合わせる実装例として注目度が高い。
+
+🔗 https://github.com/TauricResearch/TradingAgents
+```
+
+生データの「概要200字+HTMLゴミ」が、「なぜ注目されているか」まで含む技術背景の解説に変わる。これが5ソース分、毎日生成される。
+
+## まとめ
+
+- **全スクリプト合計250行程度**。すべて認証不要・無料のAPIを使用
+- **設計原則**: データ取得（シェル）とAI要約（Claude Code）の役割分担。AIに任せる部分を最小化
+- **各APIの癖への対応**: Zennのタイムゾーン変換、Qiitaの日付精度制限、Redditのレート制限など、地味だが実用上大事なハマりどころがある
+- **部分失敗への耐性**: 1つのソースが落ちても他は続行する設計
+
+手動で `claude -p "フィード集めて"` と叩けば5分で完成する。便利だ。
+
+ただし、**手動だと絶対にサボる**。情報収集ツールは「使う習慣」がないと死ぬ。作って満足→放置が最悪のパターンだ。
+
+次の記事では、このフィード生成を毎朝自動で実行し、メールで届くようにするまでの話を書く。
+
+## 参考文献
+
+- [Hacker News Algolia API](https://hn.algolia.com/api)
+- [Reddit JSON API](https://www.reddit.com/dev/api/)
+- [Qiita API v2 ドキュメント](https://qiita.com/api/v2/docs)
+- [mshibanami/GitHubTrendingRSS](https://github.com/mshibanami/GitHubTrendingRSS)
