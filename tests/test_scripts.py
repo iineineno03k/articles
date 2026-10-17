@@ -107,6 +107,10 @@ class SetPublishDateTest(Repo):
                 self.assertNotEqual(self.run_script('set-publish-date.sh', 's1', when).returncode, 0)
         self.assertIn('published: false', (self.root / 'articles/s1.md').read_text())
 
+    def test_fails_without_published_in_frontmatter(self):
+        (self.root / 'articles/s1.md').write_text('---\ntitle: "t"\n---\npublished_at: 本文の行\n')
+        self.assertNotEqual(self.run_script('set-publish-date.sh', 's1', '2030-01-07 08:00').returncode, 0)
+
     def test_default_is_a_weekday_8am(self):
         r = self.run_script('set-publish-date.sh', 's1')
         self.assertEqual(r.returncode, 0, r.stderr)

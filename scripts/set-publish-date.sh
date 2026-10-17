@@ -42,7 +42,8 @@ awk -v d="$PUBLISH_DATE" '
   fm == 1 && /^published:/ { print "published: true"; print "published_at: \"" d "\""; next }
   { print }
 ' "$ARTICLE" > "$tmp"
-grep -q '^published_at:' "$tmp" || { rm -f "$tmp"; echo "Error: frontmatter に published: がない" >&2; exit 1; }
+awk '/^---$/ { fm++ } fm == 1 && /^published_at:/ { ok = 1 } END { exit !ok }' "$tmp" \
+  || { rm -f "$tmp"; echo "Error: frontmatter に published: がない" >&2; exit 1; }
 mv "$tmp" "$ARTICLE"
 
 echo "Scheduled: ${SLUG} → ${PUBLISH_DATE}"
