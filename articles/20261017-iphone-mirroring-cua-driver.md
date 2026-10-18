@@ -4,7 +4,6 @@ emoji: "📱"
 type: "tech"
 topics: ["ClaudeCode", "iPhone", "macOS", "AI", "自動化"]
 published: true
-published_at: "2026-10-19 08:00"
 ---
 
 ## スマホの設定、めんどくない？
