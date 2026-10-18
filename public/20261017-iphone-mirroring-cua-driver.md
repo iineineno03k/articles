@@ -1,17 +1,19 @@
 ---
-title: '「おまえ操作できないの？」と聞いたら、Claude CodeがiPhoneの設定を全部やってくれた'
+title: 「おまえ操作できないの？」と聞いたら、Claude CodeがiPhoneの設定を全部やってくれた
 tags:
-  - 'ClaudeCode'
-  - 'iPhone'
-  - 'macOS'
-  - 'AI'
-  - '初心者'
+  - ClaudeCode
+  - iPhone
+  - macOS
+  - AI
+  - 初心者
 private: false
-updated_at: ''
-id: null
+updated_at: '2026-10-19T08:04:34+09:00'
+id: 7dc0d02e4ff845e4b5d9
 organization_url_name: null
 slide: false
 ignorePublish: false
+posting_campaign_uuid: null
+agreed_posting_campaign_term: false
 ---
 
 ## スマホの設定、めんどくない？

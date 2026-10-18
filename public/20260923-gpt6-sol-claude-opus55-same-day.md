@@ -12,6 +12,8 @@ id: 4faec738bfde68d92e8c
 organization_url_name: null
 slide: false
 ignorePublish: false
+posting_campaign_uuid: null
+agreed_posting_campaign_term: false
 ---
 
 米国時間の2026年9月22日、OpenAIがGPT-6 Solを、AnthropicがClaude Opus 5.5を発表した。どちらもコーディングやエージェント作業を担う新モデルで、前世代よりAPI料金が安い。[OpenAIの更新履歴](https://developers.openai.com/api/docs/changelog)・[Anthropicの発表](https://www.anthropic.com/claude-opus-5-5)
