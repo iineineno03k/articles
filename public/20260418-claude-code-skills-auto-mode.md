@@ -12,8 +12,6 @@ id: 815aa7ddad20c0a5a21a
 organization_url_name: null
 slide: false
 ignorePublish: false
-posting_campaign_uuid: null
-agreed_posting_campaign_term: false
 ---
 
 ## スキル開発してると許可ダイアログが止まらない

@@ -4,7 +4,6 @@ emoji: "🧱"
 type: "tech"
 topics: ["ClaudeCode", "Codex", "AI駆動開発", "開発生産性"]
 published: true
-published_at: "2026-10-20 08:00"
 ---
 
 Claude CodeやCodexに開発を任せるとき、一番大事なのは「どうやってevalするか」を先に決めることだと思っている。
