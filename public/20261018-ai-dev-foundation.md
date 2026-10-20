@@ -1,17 +1,19 @@
 ---
-title: 'AIに開発を任せるなら、先に「evalの方法」を決める'
+title: AIに開発を任せるなら、先に「evalの方法」を決める
 tags:
-  - 'ClaudeCode'
-  - 'Codex'
-  - 'AI駆動開発'
-  - '開発生産性'
-  - '初心者'
+  - ClaudeCode
+  - codex
+  - AI駆動開発
+  - 開発生産性
+  - 初心者
 private: false
-updated_at: ''
-id: null
+updated_at: '2026-10-20T10:32:52+09:00'
+id: 92c0885aae0523f639c7
 organization_url_name: null
 slide: false
 ignorePublish: false
+posting_campaign_uuid: null
+agreed_posting_campaign_term: false
 ---
 
 Claude CodeやCodexに開発を任せるとき、一番大事なのは「どうやってevalするか」を先に決めることだと思っている。
